@@ -1,0 +1,11 @@
+cask "wezterm"
+cask "font-hack-nerd-font"
+
+brew "starship"
+brew "zoxide"
+brew "fzf"
+brew "eza"
+brew "bat"
+brew "git-delta"
+brew "btop"
+brew "fastfetch"
