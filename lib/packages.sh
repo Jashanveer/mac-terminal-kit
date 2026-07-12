@@ -13,6 +13,7 @@ capture_preexisting_packages() {
   for package in $CASKS; do
     brew list --cask "$package" >/dev/null 2>&1 && printf 'cask\t%s\n' "$package" >> "$MACTERM_STATE_DIR/packages-preexisting"
   done
+  return 0
 }
 
 install_packages() {
@@ -46,6 +47,7 @@ record_project_packages() {
       printf 'cask\t%s\n' "$package" >> "$MACTERM_STATE_DIR/packages-installed"
     fi
   done
+  return 0
 }
 
 purge_project_packages() {

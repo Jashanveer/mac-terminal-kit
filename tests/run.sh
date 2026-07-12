@@ -17,6 +17,8 @@ TEST_HOME=''
 COMMAND_COUNT=0
 RUN_LOG=''
 RUN_OUTPUT=''
+ORIGINAL_PATH=$PATH
+TEST_PATH=$PATH
 
 cleanup() {
   if [ -n "$TEST_ROOT" ] && [ -d "$TEST_ROOT" ]; then
@@ -115,6 +117,7 @@ run_macterm() {
     XDG_CONFIG_HOME="$TEST_HOME/.config" \
     XDG_STATE_HOME="$TEST_HOME/.local/state" \
     ZDOTDIR="$TEST_HOME" \
+    PATH="$TEST_PATH" \
     MACTERM_REPO_ROOT="$ROOT_DIR" \
     "$MACTERM_BIN" "$@" >"$RUN_LOG" 2>&1; then
     RUN_OUTPUT=$(cat "$RUN_LOG")
@@ -132,7 +135,54 @@ setup_case() {
   COMMAND_COUNT=0
   RUN_LOG=''
   RUN_OUTPUT=''
+  TEST_PATH=$ORIGINAL_PATH
   mkdir -p "$TEST_HOME"
+}
+
+install_fake_brew() {
+  local fake_bin="$TEST_DIR/fake-bin"
+  export FAKE_BREW_STATE="$TEST_DIR/fake-brew-state"
+  mkdir -p "$fake_bin" "$FAKE_BREW_STATE"
+  TEST_PATH="$fake_bin:$ORIGINAL_PATH"
+
+  cat >"$fake_bin/brew" <<'EOF'
+#!/usr/bin/env bash
+set -u
+
+state=${FAKE_BREW_STATE:?}
+command_name=${1:-}
+
+case "$command_name" in
+  bundle)
+    if [ "${FAKE_BREW_PARTIAL:-0}" = 1 ]; then
+      touch "$state/formula-starship" "$state/formula-zoxide"
+    else
+      for package in starship zoxide fzf eza bat git-delta btop fastfetch; do
+        touch "$state/formula-$package"
+      done
+      touch "$state/cask-wezterm" "$state/cask-font-hack-nerd-font"
+    fi
+    exit "${FAKE_BREW_BUNDLE_STATUS:-0}"
+    ;;
+  list)
+    kind=${2#--}
+    package=${3:-}
+    [ -f "$state/$kind-$package" ]
+    ;;
+  uninstall)
+    kind=${2#--}
+    package=${3:-}
+    if [ -f "$state/fail-$package" ]; then
+      exit 1
+    fi
+    rm -f "$state/$kind-$package"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+EOF
+  chmod +x "$fake_bin/brew"
 }
 
 test_first_install() {
@@ -342,6 +392,35 @@ test_doctor_rejects_modified_managed_payload() {
     fail "doctor did not identify the invalid zsh integration"
 }
 
+test_records_packages_from_partial_brew_failure() {
+  install_fake_brew
+  export FAKE_BREW_PARTIAL=1
+  export FAKE_BREW_BUNDLE_STATUS=1
+
+  if run_macterm install; then
+    fail "install unexpectedly accepted a failed Homebrew bundle"
+  fi
+
+  assert_file_contains "$TEST_HOME/.local/state/mac-terminal-kit/packages-installed" $'formula\tstarship'
+  assert_file_contains "$TEST_HOME/.local/state/mac-terminal-kit/packages-installed" $'formula\tzoxide'
+}
+
+test_failed_package_purge_is_reported_and_retained() {
+  install_fake_brew
+  export FAKE_BREW_PARTIAL=0
+  export FAKE_BREW_BUNDLE_STATUS=0
+  run_macterm install
+  touch "$FAKE_BREW_STATE/fail-starship"
+
+  if run_macterm uninstall --purge-packages; then
+    fail "uninstall unexpectedly reported a complete package purge"
+  fi
+
+  printf '%s\n' "$RUN_OUTPUT" | grep -Fq 'partially removed' ||
+    fail "uninstall did not report the partial package purge"
+  assert_file_contains "$TEST_HOME/.local/state/mac-terminal-kit/packages-installed" $'formula\tstarship'
+}
+
 test_uninstall() {
   mkdir -p "$TEST_HOME/.config/mac-terminal-kit-test"
   git config --file "$TEST_HOME/.gitconfig" --add include.path "$TEST_HOME/.config/mac-terminal-kit-test/neighbor.gitconfig"
@@ -425,6 +504,8 @@ main() {
   run_test uninstall test_uninstall
   run_test preserves_symlinked_zshrc test_preserves_symlinked_zshrc
   run_test doctor_rejects_modified_payload test_doctor_rejects_modified_managed_payload
+  run_test records_partial_brew_failure test_records_packages_from_partial_brew_failure
+  run_test reports_failed_package_purge test_failed_package_purge_is_reported_and_retained
 
   printf '\n%d passed, %d failed\n' "$PASS_COUNT" "$FAIL_COUNT"
   [ "$FAIL_COUNT" -eq 0 ]
